@@ -1,0 +1,101 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+
+package(default_visibility = ["//visibility:public"])
+
+bool_flag(
+    name = "enable_device_memory_tracker",
+    build_setting_default = False,
+)
+
+config_setting(
+    name = "with_device_memory_tracker",
+    flag_values = {
+        ":enable_device_memory_tracker": "True",
+    }
+)
+
+cuda_library(
+    name = "kernel",
+    srcs = select({
+        "@rules_cuda//cuda:is_enabled": [
+            "src/kernel.cu",
+        ],
+        "//conditions:default": [],
+    }),
+    hdrs = select({
+        "@rules_cuda//cuda:is_enabled": [
+            "src/kernel.h",
+        ],
+        "//conditions:default": [],
+    }),
+    includes = [
+        "src",
+    ],
+)
+
+cc_library(
+    name = "triton-backend",
+    srcs = glob([
+        "src/*.cc",
+    ], exclude = ["src/device_memory_tracker.cc"]) + select({
+        ":with_device_memory_tracker": [
+            "src/device_memory_tracker.cc",
+        ],
+        "//conditions:default": [],
+    }),
+    hdrs = glob([
+        "include/triton/backend/*.h",
+    ]),
+    deps = [
+        "@triton-common",
+        "@triton-core//:triton-core-api",
+    ] + select({
+        "@rules_cuda//cuda:is_enabled": [
+            ":kernel",
+        ],
+        "//conditions:default": [],
+    }) + select({
+        "with_device_memory_tracker": [
+            "@local_cuda//:cupti",
+        ],
+        "//conditions:default": [],
+    }),
+    defines = [
+        "TRITON_ENABLE_MEMORY_TRACKER",
+    ],
+    includes = [
+        "include",
+        "include/triton/backend",
+    ],
+) 
+
+minimal_ldscript_file = "copyed_libtriton_minimal.ldscript"
+
+genrule(
+    name = "copy_minimal_ldscript",
+    srcs = [
+        "examples/backends/minimal/src/libtriton_minimal.ldscript",
+    ],
+    outs = [
+        "copyed_libtriton_minimal.ldscript"
+    ],
+    cmd = "cp $(SRCS) $(OUTS)",
+    tags = ["local"]
+)
+
+
+cc_binary(
+    name = "triton_minimal",
+    srcs = [
+        "examples/backends/minimal/src/minimal.cc",
+    ],
+    linkopts = [
+        "-Wl,--version-script,$(location %s)" % minimal_ldscript_file,
+    ],
+    deps = [
+        ":triton-backend",
+        minimal_ldscript_file,
+    ],
+    linkshared = True,
+)
